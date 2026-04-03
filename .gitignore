@@ -1,0 +1,38 @@
+# Compiled binaries
+*.exe
+*.exp
+*.lib
+*.obj
+*.pdb
+
+# CUDA intermediate files
+*.cudafe1.cpp
+*.cudafe1.gpu
+*.cudafe2.cpp
+*.fatbin
+*.fatbin.c
+*.hash
+*.cubin
+*.ptx
+*.i
+*.ii
+*.gpu
+
+# Build artifacts
+tmpxft_*
+
+# VS Code
+.vscode/
+
+# Visual Studio
+.vs/
+*.suo
+*.user
+*.sln
+*.vcxproj
+*.vcxproj.filters
+
+# Misc
+*.log
+Thumbs.db
+.DS_Store
