@@ -70,7 +70,7 @@ fig.add_trace(go.Scatter3d(
 ))
 
 output_path = "C:/Projects/nse_options_engine/iv_surface.html"
-fig.write_html(output_path)
+fig.write_html(output_path, include_plotlyjs='cdn')
 print(f"IV Surface saved to {output_path}")
 print(f"Opening in browser...")
 
