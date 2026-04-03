@@ -36,5 +36,7 @@ tmpxft_*
 *.log
 Thumbs.db
 .DS_Store
-
 venv/
+__pycache__/
+
+.env
