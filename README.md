@@ -1,5 +1,3 @@
-Here's your content properly formatted as a clean, professional `README.md`:
-
 ```markdown
 # NSE Options Pricing Engine
 
