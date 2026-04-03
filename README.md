@@ -5,7 +5,7 @@ A high-throughput, parallelized options pricing engine built with C++ and CUDA. 
 
 ## Motivation
 
-The National Stock Exchange (NSE) of India is the largest derivatives exchange globally by volume. Pricing thousands of active option contracts sequentially creates a computational bottleneck — stale data and missed opportunities in a fast-moving market. This project addresses that bottleneck directly.
+The National Stock Exchange (NSE) of India is the largest derivatives exchange globally by volume. Pricing thousands of active option contracts sequentially creates a computational bottleneck, stale data and missed opportunities in a fast-moving market. This project addresses that bottleneck directly.
 
 ## Architecture
 
@@ -53,7 +53,7 @@ IV Surface Visualization (Plotly)
 ```
 nse_options_engine/
 ├── src/
-│   ├── options_engine.cu     # CUDA kernel — BSM pricing + Greeks
+│   ├── options_engine.cu     # CUDA kernel, BSM pricing + Greeks
 │   └── cpu_baseline.cpp      # Sequential CPU implementation for benchmarking
 ├── fetch_nse.py               # Live data fetcher (Kite API + yfinance)
 ├── plot_iv_surface.py         # 3D IV surface visualization
@@ -87,7 +87,7 @@ nse_options_engine/
    pip install kiteconnect python-dotenv yfinance pandas plotly scipy
    ```
 
-3. **Configure API credentials**  
+3. **Configure API credentials**
    Create a `.env` file in the project root:
    ```
    KITE_API_KEY=your_api_key
@@ -99,7 +99,7 @@ nse_options_engine/
    python kite_login.py
    ```
 
-5. **Build the CUDA engine**  
+5. **Build the CUDA engine**
    Open `x64 Native Tools Command Prompt for VS 2019`, then:
    ```bash
    build.bat
@@ -120,9 +120,9 @@ nse_options_engine/
 
 **Implied Volatility (IV):** The volatility value that, when plugged into BSM, reproduces the observed market price. Solving for IV requires numerical methods since there is no closed-form inverse of BSM. This engine uses Newton-Raphson iteration on the GPU.
 
-**Volatility Smile/Skew:** If BSM were correct, IV would be constant across all strikes. In reality it is not — OTM puts carry higher IV than ATM options (the skew), and both OTM calls and puts carry more IV than ATM (the smile). The IV surface visualizes this phenomenon across strikes and expiries simultaneously.
+**Volatility Smile/Skew:** If BSM were correct, IV would be constant across all strikes. In reality it is not. OTM puts carry higher IV than ATM options (the skew), and both OTM calls and puts carry more IV than ATM (the smile). The IV surface visualizes this phenomenon across strikes and expiries simultaneously.
 
-**Embarrassingly Parallel:** BSM pricing of N contracts requires no inter-thread communication — each contract is fully independent. This makes it a textbook GPU workload where all N contracts can be priced in a single parallel kernel launch.
+**Embarrassingly Parallel:** BSM pricing of N contracts requires no inter-thread communication. Each contract is fully independent. This makes it a textbook GPU workload where all N contracts can be priced in a single parallel kernel launch.
 
 ## Data Source
 
@@ -133,8 +133,3 @@ Market data is sourced from the **Zerodha Kite API** (real NIFTY strikes and exp
 - Zerodha Personal plan does not include live market quotes. A Connect plan (or equivalent broker API) is required for real-time option prices.
 - BSM assumes constant volatility and does not account for jumps, stochastic volatility, or discrete dividends.
 - GPU timing measures kernel execution only. Full pipeline time including PCIe data transfer is higher.
-
-## License
-
-MIT
-```
