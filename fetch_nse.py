@@ -1,10 +1,12 @@
+﻿# -*- coding: utf-8 -*-
 from kiteconnect import KiteConnect
 from dotenv import load_dotenv
 import pandas as pd
-import numpy as np
 import yfinance as yf
 import os
 from datetime import date
+from scipy.stats import norm
+import math
 
 load_dotenv()
 kite = KiteConnect(api_key=os.getenv("KITE_API_KEY"))
@@ -13,12 +15,10 @@ kite.set_access_token(os.getenv("KITE_ACCESS_TOKEN"))
 def get_spot():
     ticker = yf.Ticker("^NSEI")
     spot = ticker.fast_info["lastPrice"]
-    print(f"Spot price (yfinance): {spot}")
+    print(f"Spot price: {spot}")
     return spot
 
 def bsm_price(S, K, T, r, sigma, option_type):
-    from scipy.stats import norm
-    import math
     if T <= 0 or sigma <= 0:
         return max(0, S - K) if option_type == "CE" else max(0, K - S)
     d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
@@ -28,16 +28,17 @@ def bsm_price(S, K, T, r, sigma, option_type):
     else:
         return K * math.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
 
-def realistic_iv(strike, spot, base_iv=0.15):
-    # Volatility skew � OTM puts have higher IV (typical NSE smile)
+def realistic_iv(strike, spot, T, base_iv=0.15):
     moneyness = (strike - spot) / spot
-    skew = 0.08 * moneyness ** 2 - 0.04 * moneyness
-    return max(0.08, base_iv + skew)
+    # Skew: OTM puts expensive, OTM calls cheaper (NSE typical shape)
+    skew = 0.10 * moneyness ** 2 - 0.05 * moneyness
+    # Term structure: short-dated options have higher IV
+    term_adj = 0.02 * math.exp(-T * 12)
+    return max(0.08, base_iv + skew + term_adj)
 
-def fetch_options_chain(symbol="NIFTY"):
-    print(f"Fetching {symbol} options chain...")
+def fetch_options_chain(symbol="NIFTY", num_expiries=5):
+    print(f"Fetching {symbol} options chain ({num_expiries} expiries)...")
 
-    # Real strikes and expiries from Kite
     instruments = kite.instruments("NFO")
     df_inst = pd.DataFrame(instruments)
     nifty_opts = df_inst[
@@ -45,49 +46,47 @@ def fetch_options_chain(symbol="NIFTY"):
         (df_inst["instrument_type"].isin(["CE", "PE"]))
     ].copy()
 
-    nearest_expiry = sorted(nifty_opts["expiry"].unique())[0]
-    print(f"Using expiry: {nearest_expiry}")
+    all_expiries = sorted(nifty_opts["expiry"].unique())[:num_expiries]
+    print(f"Expiries: {all_expiries}")
 
-    spot = get_spot()
-    r    = 0.065  # RBI repo rate
-
-    weekly = nifty_opts[
-        (nifty_opts["expiry"] == nearest_expiry) &
-        (nifty_opts["strike"] >= spot * 0.92) &
-        (nifty_opts["strike"] <= spot * 1.08)
-    ].copy()
-
-    # Time to expiry in years
-    today  = date.today()
-    expiry = nearest_expiry
-    T      = max((expiry - today).days, 1) / 365.0
-    print(f"Days to expiry: {int(T * 365)}, T = {T:.4f}")
+    spot  = get_spot()
+    r     = 0.065
+    today = date.today()
 
     rows = []
-    for _, inst in weekly.iterrows():
-        strike      = inst["strike"]
-        option_type = inst["instrument_type"]
-        iv          = realistic_iv(strike, spot)
-        price       = bsm_price(spot, strike, T, r, iv, option_type)
+    for expiry in all_expiries:
+        T = max((expiry - today).days, 1) / 365.0
+        weekly = nifty_opts[
+            (nifty_opts["expiry"] == expiry) &
+            (nifty_opts["strike"] >= spot * 0.90) &
+            (nifty_opts["strike"] <= spot * 1.10)
+        ].copy()
 
-        rows.append({
-            "expiry":     str(expiry),
-            "strike":     strike,
-            "type":       option_type,
-            "last_price": round(price, 2),
-            "iv":         round(iv * 100, 2),
-            "spot":       spot,
-            "T":          round(T, 6),
-            "r":          r,
-        })
+        print(f"  {expiry} — {len(weekly)} contracts, T={T:.4f}")
+
+        for _, inst in weekly.iterrows():
+            strike      = inst["strike"]
+            option_type = inst["instrument_type"]
+            iv          = realistic_iv(strike, spot, T)
+            price       = bsm_price(spot, strike, T, r, iv, option_type)
+            rows.append({
+                "expiry":     str(expiry),
+                "strike":     strike,
+                "type":       option_type,
+                "last_price": round(price, 2),
+                "iv":         round(iv * 100, 2),
+                "spot":       spot,
+                "T":          round(T, 6),
+                "r":          r,
+                "days":       int(T * 365),
+            })
 
     df = pd.DataFrame(rows)
     df = df[df["last_price"] > 0].reset_index(drop=True)
     df.to_csv("C:/Projects/nse_options_engine/options_data.csv", index=False)
-
-    print(f"\nSaved {len(df)} contracts")
+    print(f"\nTotal contracts saved: {len(df)}")
     print(df.head(10).to_string())
     return df, spot
 
 if __name__ == "__main__":
-    df, spot = fetch_options_chain("NIFTY")
+    df, spot = fetch_options_chain("NIFTY", num_expiries=5)
