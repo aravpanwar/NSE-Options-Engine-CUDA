@@ -36,3 +36,5 @@ tmpxft_*
 *.log
 Thumbs.db
 .DS_Store
+
+venv/
