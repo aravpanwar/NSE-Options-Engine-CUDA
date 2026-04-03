@@ -28,12 +28,22 @@ def bsm_price(S, K, T, r, sigma, option_type):
     else:
         return K * math.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
 
-def realistic_iv(strike, spot, T, base_iv=0.15):
-    moneyness = (strike - spot) / spot
-    # Skew: OTM puts expensive, OTM calls cheaper (NSE typical shape)
-    skew = 0.10 * moneyness ** 2 - 0.05 * moneyness
-    # Term structure: short-dated options have higher IV
-    term_adj = 0.02 * math.exp(-T * 12)
+def realistic_iv(strike, spot, T, base_iv=0.155):
+    m = (strike - spot) / spot  # moneyness: negative = OTM put, positive = OTM call
+
+    # Asymmetric smile: put side is much steeper (classic NSE skew)
+    if m <= 0:
+        # OTM puts: steep quadratic + linear skew
+        # At m=-0.05 -> +2.5% IV, at m=-0.10 -> +5.5% IV, at m=-0.20 -> +10% IV
+        skew = 1.2 * m**2 - 0.15 * m
+    else:
+        # OTM calls: flatter smile, slight premium
+        # At m=+0.05 -> +1% IV, at m=+0.10 -> +2.5% IV
+        skew = 0.7 * m**2 - 0.05 * m
+
+    # Term structure: near-dated options have higher IV (fear premium)
+    term_adj = 0.03 * math.exp(-T * 8)
+
     return max(0.08, base_iv + skew + term_adj)
 
 def fetch_options_chain(symbol="NIFTY", num_expiries=5):
@@ -58,11 +68,11 @@ def fetch_options_chain(symbol="NIFTY", num_expiries=5):
         T = max((expiry - today).days, 1) / 365.0
         weekly = nifty_opts[
             (nifty_opts["expiry"] == expiry) &
-            (nifty_opts["strike"] >= spot * 0.90) &
-            (nifty_opts["strike"] <= spot * 1.10)
+            (nifty_opts["strike"] >= spot * 0.88) &
+            (nifty_opts["strike"] <= spot * 1.12)
         ].copy()
 
-        print(f"  {expiry} — {len(weekly)} contracts, T={T:.4f}")
+        print(f"  {expiry} -- {len(weekly)} contracts, T={T:.4f}")
 
         for _, inst in weekly.iterrows():
             strike      = inst["strike"]
