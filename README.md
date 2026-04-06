@@ -1,25 +1,8 @@
 ````markdown
 # NSE Options Pricing Engine
 
-![C++](https://img.shields.io/badge/C++-%2300599C.svg?style=flat-square&logo=c%2B%2B&logoColor=white)
-![CUDA](https://img.shields.io/badge/CUDA-12.4-76B900?style=flat-square&logo=nvidia&logoColor=white)
-![Python](https://img.shields.io/badge/Python-3.11+-3670A0?style=flat-square&logo=python&logoColor=ffdd54)
-![License](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)
 
 > A high-throughput, parallelized options pricing engine built with C++ and CUDA. By offloading Black-Scholes-Merton calculations to an NVIDIA RTX 4050 GPU, the engine evaluates an entire NSE NIFTY 50 options chain concurrently, demonstrating a **269x speedup** over a sequential CPU implementation at scale.
-
-## Table of Contents
-- [Motivation](#motivation)
-- [Architecture](#architecture)
-- [Benchmark Results](#benchmark-results)
-- [Hardware Specs](#hardware-specs)
-- [Project Structure](#project-structure)
-- [Setup & Installation](#setup--installation)
-- [Usage](#usage)
-- [Key Concepts](#key-concepts)
-- [Data Source](#data-source)
-- [Limitations](#limitations)
-- [License](#license)
 
 ---
 
