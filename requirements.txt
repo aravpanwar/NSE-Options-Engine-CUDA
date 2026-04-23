@@ -1,8 +1,12 @@
-kiteconnect
-python-dotenv
-yfinance
-nsepython
-pandas
-numpy
-scipy
-plotly
+# Data pipeline (Phase 2: fetch_nse_stocks.py, plot_american.py)
+yfinance>=0.2.40
+pandas>=2.0
+numpy>=1.24
+scipy>=1.10
+plotly>=5.18
+
+# Legacy Phase 0 (fetch_nse.py, kite_login.py, debug_nse.py)
+# Only needed if you want to exercise the Kite / nsepython scripts.
+kiteconnect>=5.0
+python-dotenv>=1.0
+nsepython>=2.97

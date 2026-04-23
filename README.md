@@ -50,13 +50,36 @@ python plot_american.py
 
 The default ticker set is RELIANCE, HDFCBANK, TCS, INFY, ICICIBANK. Override with `--tickers` on `fetch_nse_stocks.py`.
 
+## Requirements
+
+**Hardware**
+- NVIDIA GPU with CUDA compute capability 6.0 or newer (built for sm_89 / Ada Lovelace by default; edit `build.sh` or `build.bat` to retarget)
+- At least 2 GB VRAM for the default 100k paths; 6 GB for 10M paths
+- x86_64 CPU with AVX2 for the CPU baseline
+
+**Software (Docker path, works on any host including WDAC-locked)**
+- Docker Desktop 20+ with WSL2 backend
+- NVIDIA driver 470+ on Windows host (CUDA-on-WSL support)
+- Python 3.11+ for the data pipeline
+
+**Software (native Windows path, for unblocked hosts only)**
+- Windows 10/11 x64
+- CUDA Toolkit 12.4+
+- Visual Studio 2019 Build Tools (Desktop development with C++)
+- Python 3.11+
+
+**Python packages** (same for both paths) — see `requirements.txt`:
+```
+python -m pip install -r requirements.txt
+```
+
+`pip.exe` itself may be blocked by WDAC; `python -m pip` invokes pip through the signed `python.exe` and works around it.
+
 ## Setup
 
 ### Docker (recommended)
 
 Works on any host, including machines with Windows Device Guard / WDAC in enforced mode where unsigned binaries cannot run.
-
-Prerequisites: Docker Desktop with WSL2 backend, NVIDIA driver 470+, an NVIDIA GPU.
 
 ```powershell
 # First run: build the image (~3 GB, one time)
@@ -76,21 +99,13 @@ Prerequisites: Docker Desktop with WSL2 backend, NVIDIA driver 470+, an NVIDIA G
 
 ### Native Windows (alternative)
 
-For hosts without WDAC. Prerequisites: CUDA Toolkit 12.4, Visual Studio 2019 Build Tools, Python 3.11+.
+For hosts without WDAC.
 
 ```cmd
 REM x64 Native Tools Command Prompt for VS 2019
 build.bat
 lsm_engine.exe --paths 1000000
 ```
-
-### Python environment
-
-```powershell
-python -m pip install -r requirements.txt
-```
-
-If `pip.exe` itself is blocked by Device Guard (it is a shim executable, separate from `python.exe`), use `python -m pip` instead of `pip`.
 
 ## Running the full pipeline
 
