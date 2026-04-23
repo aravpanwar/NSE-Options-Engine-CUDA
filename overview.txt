@@ -1,0 +1,276 @@
+NSE OPTIONS ENGINE - CODE OVERVIEW
+===================================
+
+Purpose
+-------
+Personal project to demonstrate GPU-accelerated options pricing using
+CUDA on an RTX 4050. The engine reads NSE NIFTY option chains, prices
+each contract using Black-Scholes-Merton on the GPU, and visualizes
+the resulting implied-volatility surface in a browser.
+
+
+Repository layout
+-----------------
+  src/
+    options_engine.cu        BSM + Greeks kernel (Phase 0 legacy)
+    cpu_baseline.cpp         BSM sequential baseline
+    lsm_engine.cu            American option LSM MC (CUDA, supports CSV batch)
+    lsm_cpu.cpp              LSM sequential baseline
+  fetch_nse.py               Legacy Kite-based fetcher (Phase 0, kept for reference)
+  fetch_nse_stocks.py        yfinance-driven fetcher for Phase 2, writes data/contracts.csv
+  plot_american.py           Builds plots/dashboard.html from results.csv
+  kite_login.py              One-time OAuth for Zerodha Kite (unused in Phase 2)
+  debug_nse.py               Scratch script using nsepython (unused in Phase 2)
+  plot_iv_surface.py         3D IV surface for Phase 0 data
+  build.bat                  Windows-native build (nvcc + MSVC)
+  Dockerfile                 Linux build + runtime image for WDAC-locked hosts
+  build.sh                   Linux build (runs inside container)
+  run.ps1                    PowerShell wrapper for container workflow
+  .env.example               Template for KITE_API_KEY / KITE_API_SECRET
+  requirements.txt           Python dependencies
+  README.md                  Project-facing docs
+  data/                      Generated CSVs (gitignored)
+  plots/                     Generated HTML dashboards (gitignored)
+
+
+Docker workflow (required when WDAC blocks self-built exes)
+-----------------------------------------------------------
+Device Guard / WDAC in enforced mode refuses to load any unsigned native
+binary on the host, including the ones nvcc and cl.exe just produced. The
+escape hatch is a CUDA devel container; GPU passthrough works through
+WSL2 + Docker Desktop using the host NVIDIA driver.
+
+  # One-time (builds a ~3 GB image)
+  .\run.ps1 build            # also builds on first run if image missing
+
+  # Compile the native targets into ./bin
+  .\run.ps1 build
+
+  # Run something
+  .\run.ps1 lsm_engine                          # reference case
+  .\run.ps1 lsm_engine --paths 1000000          # larger MC
+  .\run.ps1 lsm_cpu                             # sequential baseline
+
+  # Interactive shell inside the container
+  .\run.ps1 shell
+
+Under the hood, `.\run.ps1 X args` becomes:
+  docker run --rm --gpus all -v ${PWD}:/app nse-cuda ./bin/X args
+
+Binaries live in ./bin (gitignored). They are Linux ELFs, not Windows
+exes; they only run inside the container.
+
+
+End-to-end data flow
+--------------------
+  1. kite_login.py opens the Zerodha login URL. You paste the returned
+     request_token from the redirect, and the script exchanges it for
+     an access_token, which is appended to .env. Valid until the next
+     trading day.
+
+  2. fetch_nse.py reads .env, authenticates against KiteConnect, pulls
+     the NIFTY spot from yfinance (^NSEI), and builds a grid of strikes
+     and expiries. For each (strike, expiry, type) it computes an
+     implied volatility from realistic_iv(), then uses BSM to generate
+     a synthetic price. Result: a CSV.
+
+  3. The GPU engine (options_engine.exe) currently runs on a synthetic
+     1M-contract benchmark, not the CSV from step 2. There is no
+     bridge between the Python pipeline and the CUDA executable yet.
+
+  4. plot_iv_surface.py reads the CSV, pivots strikes against days to
+     expiry, and writes an HTML file with a Plotly 3D surface.
+
+
+File walkthrough
+----------------
+
+kite_login.py
+  Short OAuth helper. Uses KiteConnect to print the login URL, waits
+  for the user to paste the request_token from the redirect, then calls
+  generate_session() to obtain an access_token. The token is appended
+  to .env so fetch_nse.py can read it.
+
+fetch_nse.py
+  - bsm_price(S, K, T, r, sigma, type): closed-form Black-Scholes.
+  - realistic_iv(S, K, T): generates an IV based on moneyness m = K/S:
+      * m < 1 (OTM puts): quadratic + linear skew, steep left wing.
+      * m > 1 (OTM calls): flatter quadratic smile.
+      * Short-dated contracts (T < 14 days) get +3% added.
+      * Base vol 15.5%, floored at 8%.
+  - Authenticates to Kite, fetches the NFO instrument master, filters
+    to NIFTY futures to enumerate expiries, loops over the nearest 5.
+  - For each expiry, generates a strike ladder from 88% to 112% of
+    spot in 0.5% increments, writes one row per (strike, CE/PE).
+  - OUTPUT PATH is hardcoded to
+    C:/Projects/nse_options_engine/options_data.csv. Change to a
+    relative path before running on this machine.
+
+debug_nse.py
+  Three-line probe that calls nsepython.option_chain("NIFTY") and
+  prints the response. Used during development to inspect nsepython's
+  schema. Not part of the main pipeline.
+
+plot_iv_surface.py
+  Reads options_data.csv, filters to calls, pivots to a (strike x days)
+  grid of IV values, and plots a 3D surface with a dashed red line
+  marking the ATM strike. Writes iv_surface.html. Same hardcoded path
+  issue as fetch_nse.py.
+
+src/options_engine.cu
+  One CUDA kernel plus a host harness.
+  - OptionContract struct: S, K, T, r, sigma, is_call.
+  - OptionResult struct: price, delta, gamma, theta, vega.
+  - normpdf_device(): custom PDF since CUDA only ships normcdff().
+  - bsm_kernel(): one thread per contract. Computes d1, d2, then all
+    five quantities in one pass. Standard
+    blockIdx.x * blockDim.x + threadIdx.x indexing, guarded against
+    N overflow.
+  - main(): allocates 1M contracts, fills with deterministic test
+    data (strikes walking from 18000 in 10-rupee steps, alternating
+    CE/PE), cudaMalloc for input + output, H2D copy, launches with
+    256 threads/block, times with CUDA events, D2H copy, prints the
+    first five results plus throughput.
+
+  Notes:
+    - Built for sm_89 (Ada Lovelace = RTX 4050).
+    - Uses --use_fast_math. Single-precision BSM diverges from double
+      around the 5th decimal. Fine for a demo.
+    - The kernel is cheap enough that wall time is dominated by
+      launch overhead and memcpy, not compute.
+
+src/cpu_baseline.cpp
+  Sequential C++ mirror of the kernel. Same struct layout, same math,
+  same 1M contract size. std::chrono for timing. Exists so the README
+  can quote a speedup multiple.
+
+Phase 2: NSE pipeline
+---------------------
+  1. fetch_nse_stocks.py
+     - yfinance provides spot (last close) and 30-day annualized log-return
+       volatility for each of 5 NSE tickers (RELIANCE, HDFCBANK, TCS, INFY,
+       ICICIBANK by default).
+     - nsepython / direct nseindia.com calls return HTTP 200 with an empty
+       records dict: NSE actively filters non-browser traffic. We fall back
+       to a synthetic strike ladder generated on NSE's standard strike-step
+       rules (piecewise by spot price band). Expiry dates are real: last
+       Thursday of each of the next 3 months.
+     - Output: data/contracts.csv  (~700-800 contracts for 5 tickers)
+
+  2. src/lsm_engine.cu  --input data/contracts.csv  --output data/results.csv
+     - Batch mode: reads the CSV row by row, prices each contract with
+       Longstaff-Schwartz MC, writes one result row with american, european,
+       premium, and per-contract gpu_ms.
+     - Device buffers are allocated once and reused across contracts, so
+       per-contract overhead is ~25 ms (vs ~90 ms in the single-contract
+       validation mode which allocates fresh each time).
+
+  3. plot_american.py
+     - Reads data/results.csv.
+     - Builds plots/dashboard.html: 3D put premium surfaces (per stock),
+       3D call premium surfaces (near-zero for non-dividend stocks, as
+       theory predicts), max-premium bar chart, and an American-put price
+       heatmap for one selected stock.
+     - Self-contained HTML (Plotly loaded from CDN once).
+
+End-to-end run:
+  python fetch_nse_stocks.py
+  .\run.ps1 lsm_engine --input data/contracts.csv --output data/results.csv
+  python plot_american.py
+
+
+src/lsm_engine.cu    (Phase 1, extended in Phase 2)
+  American option pricer via Longstaff-Schwartz Monte Carlo on the GPU.
+  - Params struct: S0, K, r, sigma, T, steps, paths, type, seed.
+  - sim_paths: one thread per path, writes GBM trajectory step-by-step.
+    RNG is Philox (curandStatePhilox4_32_10_t) with per-thread seed.
+    Storage is step-major: paths[t * N + i], so the backward sweep gets
+    coalesced reads.
+  - terminal: initializes V[i] to the expiry payoff.
+  - collect: per backward step t, discounts V[i] by df = exp(-r*dt), and
+    for ITM paths atomically adds into 7 double-precision sums:
+    Σs, Σs^2, Σs^3, Σs^4, Σy, Σs*y, Σs^2*y (where s = S/K, y = V[i]).
+    Doubles are used to avoid catastrophic cancellation across ~100k
+    additions; atomicAdd on doubles requires compute >= 6.0 (sm_89 ok).
+  - Host: the 7 sums + ITM count are copied back each step. solve3()
+    inverts the 3x3 symmetric X^T X via explicit adjugate and sends
+    beta back for the exercise decision.
+  - apply_exercise: for ITM paths only, computes continuation value
+    cont = beta0 + beta1*s + beta2*s^2 and overwrites V[i] with the
+    intrinsic if exercising now beats continuation.
+  - discount_all / reduce_sum: final discount + atomic sum for the mean.
+  - CLI: --S0 --K --r --sigma --T --steps --paths --seed --type.
+    No args runs the Longstaff-Schwartz 2001 Table 1 validation case
+    (American put, S=K=40, r=6%, sigma=20%, T=1, 50 steps); reference
+    price is ~4.478.
+
+src/lsm_cpu.cpp      (Phase 1)
+  Straight-line port of lsm_engine.cu to sequential C++. Same CLI and
+  same output format. std::mt19937_64 + std::normal_distribution for
+  path generation. Exists so GPU vs CPU numbers are honest.
+
+  Note: GPU and CPU results will NOT match bit-for-bit even with the
+  same seed, because cuRAND Philox and MT19937 are different RNGs.
+  Both should converge to the same LSM price within MC standard error.
+
+build.bat
+  Compiles four targets:
+    options_engine.exe   (BSM CUDA)
+    cpu_baseline.exe     (BSM CPU)
+    lsm_engine.exe       (LSM CUDA, Phase 1)
+    lsm_cpu.exe          (LSM CPU, Phase 1)
+  Needs a VS 2019 x64 Native Tools prompt so cl.exe is on PATH.
+
+
+The BSM math, briefly
+---------------------
+  d1 = (ln(S/K) + (r + sigma^2/2) * T) / (sigma * sqrt(T))
+  d2 = d1 - sigma * sqrt(T)
+
+  Call  = S*N(d1) - K*exp(-rT)*N(d2)
+  Put   = K*exp(-rT)*N(-d2) - S*N(-d1)
+
+  Delta_call = N(d1)             Delta_put  = N(d1) - 1
+  Gamma      = phi(d1) / (S * sigma * sqrt(T))
+  Vega       = S * phi(d1) * sqrt(T)
+  Theta_call = -S*phi(d1)*sigma / (2*sqrt(T)) - r*K*exp(-rT)*N(d2)
+  Theta_put  = -S*phi(d1)*sigma / (2*sqrt(T)) + r*K*exp(-rT)*N(-d2)
+
+  N is the standard normal CDF, phi is the PDF. The kernel uses
+  normcdff() (CUDA builtin) and normpdf_device() (inline).
+
+
+Known issues and open threads
+-----------------------------
+  1. Hardcoded C:/Projects/nse_options_engine/ paths in fetch_nse.py
+     and plot_iv_surface.py. Both scripts fail on any other machine.
+  2. README mentions a "Newton-Raphson IV solver on GPU". The CUDA
+     code only does forward pricing. IV is computed in Python.
+  3. The CUDA engine does not ingest the CSV produced by
+     fetch_nse.py. Benchmarks use synthetic data from main().
+  4. Contract count is a compile-time constant (1M), not a CLI flag.
+  5. The GPU kernel finishes in under a millisecond. The RTX 4050
+     sits idle for more than 99% of wall clock. If the goal is a
+     CUDA showcase, this is the first thing to fix.
+
+
+Typical run, end to end
+-----------------------
+  # One-time
+  python -m venv venv
+  venv\Scripts\Activate.ps1
+  pip install -r requirements.txt
+
+  # Daily
+  python kite_login.py         paste request_token from browser
+  python fetch_nse.py          writes options_data.csv
+
+  # Build once
+  build.bat
+
+  # Benchmark
+  options_engine.exe           GPU, ~0.5 ms for 1M contracts
+  cpu_baseline.exe             CPU, ~130 ms for 1M contracts
+
+  # Visualize
+  python plot_iv_surface.py    opens iv_surface.html in browser

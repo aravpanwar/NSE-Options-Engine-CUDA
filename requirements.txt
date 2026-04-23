@@ -1,0 +1,8 @@
+kiteconnect
+python-dotenv
+yfinance
+nsepython
+pandas
+numpy
+scipy
+plotly

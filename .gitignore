@@ -1,10 +1,10 @@
-[System.IO.File]::WriteAllText("C:\Projects\nse_options_engine\.gitignore", @'
 # Compiled binaries
 *.exe
 *.exp
 *.lib
 *.obj
 *.pdb
+bin/
 
 # CUDA intermediate files
 *.cudafe1.cpp
@@ -23,6 +23,8 @@ tmpxft_*
 # Generated output
 *.html
 *.csv
+data/
+plots/
 
 # Python
 venv/
@@ -34,6 +36,9 @@ __pycache__/
 
 # Secrets
 .env
+
+# Local AI context
+CLAUDE.md
 
 # VS Code
 .vscode/
@@ -50,5 +55,3 @@ __pycache__/
 *.log
 Thumbs.db
 .DS_Store
-'@, [System.Text.Encoding]::UTF8)
-Write-Host ".gitignore written!" -ForegroundColor Green
