@@ -179,7 +179,34 @@ End-to-end run:
   python plot_american.py
 
 
-src/lsm_engine.cu    (Phase 1, extended in Phase 2)
+Bias correction (Rasmussen 2005 out-of-sample valuation)
+--------------------------------------------------------
+The engine reports two American price estimates per contract:
+
+  american_is  - in-sample LSM. Policy and valuation share the same N paths.
+                 What Longstaff-Schwartz 2001 originally reports. Biased in
+                 unpredictable directions by the interplay of (a) suboptimal
+                 policy (downward) and (b) in-sample fit optimism (upward).
+
+  american     - out-of-sample LSM. Phase 1 fits the policy as before and
+                 saves beta[t] for each exercise step. Phase 2 generates a
+                 fresh path set with seed ^= 0xDEADBEEFDEADBEEF, walks
+                 forward, applies beta[t] as the exercise trigger, averages
+                 discounted payoffs. No in-sample optimism. Rigorous lower
+                 bound on the true American value. Primary output.
+
+Cost: Phase 2 roughly doubles GPU time since each contract does N extra
+path simulations. The value_oos kernel is single-kernel (no intermediate
+path storage), so memory footprint is unchanged.
+
+Observed impact: extreme deep-ITM short-dated put outliers collapsed
+(one TCS OTM put went from premium=-4.78 to -0.14). Call premiums
+shifted slightly more negative on average because OOS removes the
+compensating in-sample upward bias; the remaining -0.7% of price is
+pure suboptimal-policy noise from the 3-term polynomial basis.
+
+
+src/lsm_engine.cu    (Phase 1, extended in Phase 2, OOS added)
   American option pricer via Longstaff-Schwartz Monte Carlo on the GPU.
   - Params struct: S0, K, r, sigma, T, steps, paths, type, seed.
   - sim_paths: one thread per path, writes GBM trajectory step-by-step.

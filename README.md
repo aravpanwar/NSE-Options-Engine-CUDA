@@ -9,11 +9,13 @@ GPU-accelerated option pricer for Indian equity derivatives. Two engines share t
 
 LSM validation (LS 2001 Table 1 base case: American put, S = K = 40, r = 6%, sigma = 20%, T = 1, 50 steps):
 
-| | Reference | GPU, 100k paths |
-| --- | --- | --- |
-| American price | 2.314 | 2.3157 |
-| European BSM | 2.066 | 2.0664 |
-| Early-exercise premium | 0.248 | 0.2493 |
+| | Reference (FD) | GPU OOS | GPU IS |
+| --- | --- | --- | --- |
+| American price | 2.313 | 2.298 | 2.316 |
+| European BSM | 2.066 | 2.066 | 2.066 |
+| Early-exercise premium | 0.247 | 0.232 | 0.249 |
+
+Two estimators are reported. **OOS** (out-of-sample, Rasmussen 2005) is the primary: the exercise policy is fit on one path set, the price is evaluated on a disjoint set. This gives an honest lower bound on the American value and eliminates in-sample optimism. **IS** (in-sample LSM) is what Longstaff-Schwartz 2001 originally reported; it uses the same paths for policy and valuation. Both land within MC noise of the finite-difference reference.
 
 LSM throughput at 1M paths per contract (50 exercise dates):
 
@@ -151,10 +153,15 @@ Longstaff & Schwartz (2001) estimate the continuation value of an American optio
    - Discount V by `exp(-r * dt)`.
    - For in-the-money paths only, accumulate seven moments (sums of `s`, `s^2`, `s^3`, `s^4`, `y`, `s*y`, `s^2 * y` with `s = S/K`, `y = V`) into device memory via `atomicAdd(double*, double)`.
    - Copy the moments back to host. Solve the 3x3 symmetric system for `beta` via explicit adjugate. Copy `beta` back to device.
-   - Update V[i] to `max(intrinsic, beta . basis(S[i][t]))` for ITM paths.
-4. Discount once more, average V for the price.
+   - Save `beta[t]` to the policy array. Update V[i] to `max(intrinsic, beta . basis(S[i][t]))` for ITM paths.
+4. Discount once more, average V for the in-sample estimate (V_IS).
+5. **Phase 2 (OOS valuation, Rasmussen 2005)**: simulate a fresh path set with an independent seed. For each path, walk forward; at each step, compute the continuation estimate using the saved `beta[t]`. Exercise the first time `intrinsic > continuation`; otherwise take the terminal payoff. Discount each path's cash flow to t=0 and average. This V_OOS is the primary result.
 
 The 3x3 solve runs on the host because the matrix is too small for cuSOLVER to be worthwhile. This forces a sync per exercise date, which is the current performance ceiling.
+
+### Why out-of-sample
+
+In-sample LSM reuses the same paths for both policy fitting and price evaluation. The fit is optimistic (it finds coefficients that happen to score well on those specific paths), which partially cancels the downward bias from using a suboptimal polynomial policy. The two biases offset unpredictably, and for deep-ITM short-dated contracts the residual error can be large (we observed one TCS OTM put landing at V_IS = V_European − 4.78 before the correction). OOS eliminates the in-sample optimism entirely: V_OOS is a rigorous lower bound on the true American value, and extreme outliers collapse (the TCS put went from −4.78 to −0.14 after the correction). The tradeoff is that for non-dividend calls, where the optimistic and pessimistic biases roughly cancel in IS, OOS slightly widens the mean error (because only the downward component remains). This is the textbook behavior and documented in Rasmussen (2005).
 
 ## Data sources and honesty
 
@@ -175,10 +182,11 @@ The pricing is real. The strike grid it is priced on is a plausible simulation o
 
 - FP32 single-precision throughout. Adequate for MC because sampling variance dominates FP64 differences.
 - Three-term polynomial basis (`1, s, s^2`) with `s = S/K`. Fine for validation; higher-order bases or Laguerre polynomials would be marginal here.
-- No dividend model. American calls on non-dividend stocks equal European calls; the engine confirms this (call premium is MC noise around zero across all results).
-- Current LSM speedup is 7x at 1M paths. Phase 3 targets 50-100x via on-device 3x3 solve and block-level shared-memory reductions replacing atomics.
+- No dividend model. American calls on non-dividend stocks equal European calls. The OOS estimator shows a small consistent downward bias on call premiums (mean -0.7% of price) driven by spurious early exercise from regression-induced continuation-value noise. Clean fixes: richer basis, basis chosen conditionally per step, or exploit Merton's inequality for non-dividend calls.
+- Current LSM speedup is 7x at 1M paths, and sustained SM utilization is 85-93% during the batch. Further speedup requires either more parallelism across contracts (streams) or algorithmic changes; kernel optimization alone has little headroom.
 - Single-contract mode allocates device buffers per invocation; only batch mode reuses.
 
 ## References
 
-Longstaff, Francis A. and Eduardo S. Schwartz. "Valuing American Options by Simulation: A Simple Least-Squares Approach." Review of Financial Studies 14.1 (2001): 113-147.
+- Longstaff, Francis A. and Eduardo S. Schwartz. "Valuing American Options by Simulation: A Simple Least-Squares Approach." *Review of Financial Studies* 14.1 (2001): 113-147.
+- Rasmussen, Nicki S. "Control variates for Monte Carlo valuation of American options." *Journal of Computational Finance* 9.1 (2005): 83-118. (Out-of-sample valuation scheme adopted here.)

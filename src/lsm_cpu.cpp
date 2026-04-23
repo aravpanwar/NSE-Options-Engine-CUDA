@@ -114,6 +114,10 @@ int main(int argc, char** argv) {
         V[i] = payoff(S_T, p.K, p.type);
     }
 
+    // Capture policy per step for out-of-sample Phase 2.
+    std::vector<float> policy((size_t)3 * p.steps, 0.f);
+    for (int t = 0; t < p.steps; ++t) policy[(size_t)t*3 + 0] = 1e10f;
+
     for (int t = p.steps - 1; t >= 1; --t) {
         double a01 = 0, a02 = 0, a12 = 0, a22 = 0;
         double b0  = 0, b1  = 0, b2  = 0;
@@ -148,25 +152,63 @@ int main(int argc, char** argv) {
             float cont = beta[0] + beta[1] * s + beta[2] * s * s;
             if (ex > cont) V[i] = ex;
         }
+        policy[(size_t)t*3 + 0] = beta[0];
+        policy[(size_t)t*3 + 1] = beta[1];
+        policy[(size_t)t*3 + 2] = beta[2];
     }
 
+    // In-sample estimate.
     double sumV = 0.0;
     for (int i = 0; i < p.paths; ++i) {
         V[i] *= df;
         sumV += V[i];
     }
-    double american = sumV / p.paths;
+    double american_is = sumV / p.paths;
+
+    // Phase 2: out-of-sample valuation on fresh paths (different seed).
+    std::mt19937_64 rng2(p.seed ^ 0xDEADBEEFDEADBEEFULL);
+    std::normal_distribution<float> norm2(0.0f, 1.0f);
+    double sum_oos = 0.0;
+    for (int i = 0; i < p.paths; ++i) {
+        float S = p.S0;
+        float pay = 0.f;
+        bool exercised = false;
+        int ex_step = 0;
+        for (int t = 1; t < p.steps; ++t) {
+            float z = norm2(rng2);
+            S *= expf(drift + diffusion * z);
+            float ex = payoff(S, p.K, p.type);
+            if (ex > 0.f) {
+                float s = S / p.K;
+                float b0 = policy[(size_t)t*3 + 0];
+                float b1 = policy[(size_t)t*3 + 1];
+                float b2 = policy[(size_t)t*3 + 2];
+                float cont = b0 + b1 * s + b2 * s * s;
+                if (ex > cont) { pay = ex; ex_step = t; exercised = true; break; }
+            }
+        }
+        if (!exercised) {
+            float z = norm2(rng2);
+            S *= expf(drift + diffusion * z);
+            pay = payoff(S, p.K, p.type);
+            ex_step = p.steps;
+        }
+        sum_oos += pay * expf(-p.r * (float)ex_step * dt);
+    }
+    double american_oos = sum_oos / p.paths;
     double european = bsm_european(p.S0, p.K, p.T, p.r, p.sigma, p.type);
 
     auto t_end = std::chrono::high_resolution_clock::now();
     double ms = std::chrono::duration<double, std::milli>(t_end - t_start).count();
 
     printf("Results:\n");
-    printf("  American price    : %.6f\n", american);
+    printf("  American (OOS)    : %.6f   <- primary, Rasmussen 2005\n", american_oos);
+    printf("  American (IS)     : %.6f   <- in-sample LSM, shown for comparison\n", american_is);
     printf("  European BSM      : %.6f\n", european);
-    printf("  Early-ex premium  : %.6f\n", american - european);
-    printf("  CPU time          : %.2f ms\n", ms);
-    printf("  Throughput        : %.3f M paths/sec\n\n",
-           (p.paths / ms) / 1000.0f);
+    printf("  Early-ex premium  : %.6f   (OOS - European)\n", american_oos - european);
+    printf("  IS - OOS          : %.6f   (in-sample optimism)\n", american_is - american_oos);
+    printf("  CPU time          : %.2f ms  (both phases)\n", ms);
+    printf("  Throughput        : %.3f M paths/sec  (2x %d paths total)\n\n",
+           (2.0f * p.paths / ms) / 1000.0f, p.paths);
     return 0;
 }

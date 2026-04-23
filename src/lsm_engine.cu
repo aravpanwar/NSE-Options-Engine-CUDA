@@ -29,10 +29,11 @@ struct Params {
 
 struct Buffers {
     float*        d_paths = nullptr;
-    float*        d_V     = nullptr;
+    float*        d_V     = nullptr;   // doubles as OOS payoff buffer after Phase 1
     double*       d_sums  = nullptr;
     double*       d_sumV  = nullptr;
     unsigned int* d_nitm  = nullptr;
+    float*        d_betas = nullptr;   // 3 * max_steps floats; policy coefficients per step
     int           max_paths = 0;
     int           max_steps = 0;
 };
@@ -123,6 +124,48 @@ __global__ void reduce_sum(const float* V, int n, double* out) {
     if (i < n) atomicAdd(out, (double)V[i]);
 }
 
+// Phase 2 (Rasmussen 2005 out-of-sample valuation). Regenerates a fresh path
+// set with a seed independent from Phase 1, walks forward applying the policy
+// betas[t] learned during the backward sweep, and records the first profitable
+// exercise payoff (or the terminal payoff if never exercised), discounted to
+// t=0. One thread per path; no intermediate path buffer.
+__global__ void value_oos(Params p, float dt,
+                          const float* betas, float* payoffs)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= p.paths) return;
+
+    curandStatePhilox4_32_10_t rng;
+    curand_init(p.seed ^ 0xDEADBEEFDEADBEEFULL, i, 0, &rng);
+
+    float drift     = (p.r - 0.5f * p.sigma * p.sigma) * dt;
+    float diffusion =  p.sigma * sqrtf(dt);
+
+    float S = p.S0;
+    for (int t = 1; t < p.steps; ++t) {
+        float z = curand_normal(&rng);
+        S *= expf(drift + diffusion * z);
+
+        float ex = payoff(S, p.K, p.type);
+        if (ex > 0.f) {
+            float s  = S / p.K;
+            float b0 = betas[t*3 + 0];
+            float b1 = betas[t*3 + 1];
+            float b2 = betas[t*3 + 2];
+            float cont = b0 + b1 * s + b2 * s * s;
+            if (ex > cont) {
+                payoffs[i] = ex * expf(-p.r * (float)t * dt);
+                return;
+            }
+        }
+    }
+    // Never exercised early; take one final step to expiry and collect terminal payoff.
+    float z = curand_normal(&rng);
+    S *= expf(drift + diffusion * z);
+    float ex = payoff(S, p.K, p.type);
+    payoffs[i] = ex * expf(-p.r * (float)p.steps * dt);
+}
+
 // -----------------------------------------------------------------------------
 // Host helpers
 // -----------------------------------------------------------------------------
@@ -167,7 +210,8 @@ static double bsm_european(double S, double K, double T, double r, double sigma,
 // -----------------------------------------------------------------------------
 
 struct PriceResult {
-    double american;
+    double american;      // out-of-sample (Rasmussen 2005), primary
+    double american_is;   // in-sample LSM estimate, kept for comparison
     double european;
     float  gpu_ms;
 };
@@ -179,11 +223,18 @@ static PriceResult price_one(const Params& p, Buffers& b) {
     int threads = 256;
     int blocks  = (p.paths + threads - 1) / threads;
 
+    // Default policy: cont = 1e10 means we never exercise at that step. Overwritten
+    // when solve3 succeeds. Size 3*steps so we can index by t directly.
+    std::vector<float> host_betas((size_t)3 * p.steps, 0.f);
+    for (int t = 0; t < p.steps; ++t) host_betas[(size_t)t*3 + 0] = 1e10f;
+
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
     cudaEventRecord(start);
 
+    // Phase 1: backward sweep. Fits the exercise policy and produces the
+    // in-sample LSM estimate as a byproduct.
     sim_paths<<<blocks, threads>>>(b.d_paths, p, dt);
     terminal <<<blocks, threads>>>(b.d_paths, b.d_V, p);
 
@@ -203,11 +254,23 @@ static PriceResult price_one(const Params& p, Buffers& b) {
         if (solve3(h_sums, h_nitm, beta)) {
             apply_exercise<<<blocks, threads>>>(b.d_paths, b.d_V, p, t,
                                                 beta[0], beta[1], beta[2]);
+            host_betas[(size_t)t*3 + 0] = beta[0];
+            host_betas[(size_t)t*3 + 1] = beta[1];
+            host_betas[(size_t)t*3 + 2] = beta[2];
         }
     }
 
+    // In-sample: discount once more, reduce. This is V_IS (the Phase 1 estimate).
     discount_all<<<blocks, threads>>>(b.d_V, p.paths, df);
+    CHK(cudaMemset(b.d_sumV, 0, sizeof(double)));
+    reduce_sum<<<blocks, threads>>>(b.d_V, p.paths, b.d_sumV);
+    double h_sumV_is = 0.0;
+    CHK(cudaMemcpy(&h_sumV_is, b.d_sumV, sizeof(double), cudaMemcpyDeviceToHost));
 
+    // Phase 2: out-of-sample valuation with the fitted policy on fresh paths.
+    CHK(cudaMemcpy(b.d_betas, host_betas.data(),
+                   3 * (size_t)p.steps * sizeof(float), cudaMemcpyHostToDevice));
+    value_oos<<<blocks, threads>>>(p, dt, b.d_betas, b.d_V);
     CHK(cudaMemset(b.d_sumV, 0, sizeof(double)));
     reduce_sum<<<blocks, threads>>>(b.d_V, p.paths, b.d_sumV);
 
@@ -216,15 +279,16 @@ static PriceResult price_one(const Params& p, Buffers& b) {
     float ms = 0.f;
     cudaEventElapsedTime(&ms, start, stop);
 
-    double h_sumV = 0.0;
-    CHK(cudaMemcpy(&h_sumV, b.d_sumV, sizeof(double), cudaMemcpyDeviceToHost));
+    double h_sumV_oos = 0.0;
+    CHK(cudaMemcpy(&h_sumV_oos, b.d_sumV, sizeof(double), cudaMemcpyDeviceToHost));
     cudaEventDestroy(start);
     cudaEventDestroy(stop);
 
     PriceResult r;
-    r.american = h_sumV / p.paths;
-    r.european = bsm_european(p.S0, p.K, p.T, p.r, p.sigma, p.type);
-    r.gpu_ms   = ms;
+    r.american     = h_sumV_oos / p.paths;
+    r.american_is  = h_sumV_is  / p.paths;
+    r.european     = bsm_european(p.S0, p.K, p.T, p.r, p.sigma, p.type);
+    r.gpu_ms       = ms;
     return r;
 }
 
@@ -235,6 +299,7 @@ static void alloc_buffers(Buffers& b, int max_paths, int max_steps) {
     CHK(cudaMalloc(&b.d_sums,  7 * sizeof(double)));
     CHK(cudaMalloc(&b.d_nitm,  sizeof(unsigned int)));
     CHK(cudaMalloc(&b.d_sumV,  sizeof(double)));
+    CHK(cudaMalloc(&b.d_betas, 3 * (size_t)max_steps * sizeof(float)));
     b.max_paths = max_paths;
     b.max_steps = max_steps;
 }
@@ -245,6 +310,7 @@ static void free_buffers(Buffers& b) {
     cudaFree(b.d_sums);
     cudaFree(b.d_nitm);
     cudaFree(b.d_sumV);
+    cudaFree(b.d_betas);
 }
 
 // -----------------------------------------------------------------------------
@@ -354,12 +420,14 @@ static int run_single(const Cfg& c) {
     free_buffers(b);
 
     printf("Results:\n");
-    printf("  American price    : %.6f\n", r.american);
+    printf("  American (OOS)    : %.6f   <- primary, Rasmussen 2005 out-of-sample\n", r.american);
+    printf("  American (IS)     : %.6f   <- in-sample LSM, shown for comparison\n", r.american_is);
     printf("  European BSM      : %.6f\n", r.european);
-    printf("  Early-ex premium  : %.6f\n", r.american - r.european);
-    printf("  GPU time          : %.2f ms\n", r.gpu_ms);
-    printf("  Throughput        : %.2f M paths/sec\n\n",
-           (c.p.paths / r.gpu_ms) / 1000.0f);
+    printf("  Early-ex premium  : %.6f   (OOS - European)\n", r.american - r.european);
+    printf("  IS - OOS          : %.6f   (size of in-sample optimism bias)\n", r.american_is - r.american);
+    printf("  GPU time          : %.2f ms  (both phases)\n", r.gpu_ms);
+    printf("  Throughput        : %.2f M paths/sec  (2x %d paths total)\n\n",
+           (2.0f * c.p.paths / r.gpu_ms) / 1000.0f, c.p.paths);
     return 0;
 }
 
@@ -370,7 +438,7 @@ static int run_batch(const Cfg& c) {
     std::string out = c.output.empty() ? "results.csv" : c.output;
     FILE* fo = fopen(out.c_str(), "w");
     if (!fo) { fprintf(stderr, "cannot open %s for write\n", out.c_str()); return 1; }
-    fprintf(fo, "symbol,spot,strike,expiry,T,r,sigma,type,american,european,premium,gpu_ms\n");
+    fprintf(fo, "symbol,spot,strike,expiry,T,r,sigma,type,american,american_is,european,premium,gpu_ms\n");
 
     Buffers b;
     alloc_buffers(b, c.p.paths, c.p.steps);
@@ -394,10 +462,11 @@ static int run_batch(const Cfg& c) {
         PriceResult r = price_one(p, b);
         total_ms += r.gpu_ms;
 
-        fprintf(fo, "%s,%.4f,%.4f,%s,%.6f,%.6f,%.6f,%s,%.6f,%.6f,%.6f,%.2f\n",
+        fprintf(fo, "%s,%.4f,%.4f,%s,%.6f,%.6f,%.6f,%s,%.6f,%.6f,%.6f,%.6f,%.2f\n",
                 row.symbol.c_str(), row.spot, row.strike, row.expiry.c_str(),
                 row.T, row.r, row.sigma, row.type_str.c_str(),
-                r.american, r.european, r.american - r.european, r.gpu_ms);
+                r.american, r.american_is, r.european,
+                r.american - r.european, r.gpu_ms);
 
         if ((i + 1) % 25 == 0 || i + 1 == rows.size()) {
             printf("  [%4zu/%zu]  %-10s  K=%7.1f  T=%.3f  type=%-4s  "
