@@ -132,6 +132,11 @@ Useful for sanity checks and validation:
 .\run.ps1 lsm_cpu --paths 1000000
 ```
 
+<img width="1891" height="796" alt="image" src="https://github.com/user-attachments/assets/d06bab3a-ca3f-44e3-86ad-33d9c8e2fa20" />
+<img width="1876" height="809" alt="image" src="https://github.com/user-attachments/assets/2190d0e7-9644-4593-a600-80f576609389" />
+
+
+
 ## Project layout
 
 ```
