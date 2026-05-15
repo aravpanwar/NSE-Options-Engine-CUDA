@@ -74,9 +74,10 @@ End-to-end data flow
      implied volatility from realistic_iv(), then uses BSM to generate
      a synthetic price. Result: a CSV.
 
-  3. The GPU engine (options_engine.exe) currently runs on a synthetic
-     1M-contract benchmark, not the CSV from step 2. There is no
-     bridge between the Python pipeline and the CUDA executable yet.
+  3. The GPU engine (lsm_engine) runs in two modes: single-contract
+     (via CLI flags like --S0, --K, etc.) and batch mode (via --input
+     <csv> --output <csv>). The batch mode serves as the bridge between
+     the Python pipeline and the CUDA executable.
 
   4. plot_iv_surface.py reads the CSV, pivots strikes against days to
      expiry, and writes an HTML file with a Plotly 3D surface.
@@ -102,9 +103,7 @@ fetch_nse.py
     to NIFTY futures to enumerate expiries, loops over the nearest 5.
   - For each expiry, generates a strike ladder from 88% to 112% of
     spot in 0.5% increments, writes one row per (strike, CE/PE).
-  - OUTPUT PATH is hardcoded to
-    C:/Projects/nse_options_engine/options_data.csv. Change to a
-    relative path before running on this machine.
+  - Writes output to data/options_data.csv.
 
 debug_nse.py
   Three-line probe that calls nsepython.option_chain("NIFTY") and
@@ -112,10 +111,9 @@ debug_nse.py
   schema. Not part of the main pipeline.
 
 plot_iv_surface.py
-  Reads options_data.csv, filters to calls, pivots to a (strike x days)
+  Reads data/options_data.csv, filters to calls, pivots to a (strike x days)
   grid of IV values, and plots a 3D surface with a dashed red line
-  marking the ATM strike. Writes iv_surface.html. Same hardcoded path
-  issue as fetch_nse.py.
+  marking the ATM strike. Writes plots/iv_surface.html.
 
 src/options_engine.cu
   One CUDA kernel plus a host harness.
@@ -269,14 +267,9 @@ The BSM math, briefly
 
 Known issues and open threads
 -----------------------------
-  1. Hardcoded C:/Projects/nse_options_engine/ paths in fetch_nse.py
-     and plot_iv_surface.py. Both scripts fail on any other machine.
-  2. README mentions a "Newton-Raphson IV solver on GPU". The CUDA
+  1. README mentions a "Newton-Raphson IV solver on GPU". The CUDA
      code only does forward pricing. IV is computed in Python.
-  3. The CUDA engine does not ingest the CSV produced by
-     fetch_nse.py. Benchmarks use synthetic data from main().
-  4. Contract count is a compile-time constant (1M), not a CLI flag.
-  5. The GPU kernel finishes in under a millisecond. The RTX 4050
+  2. The GPU kernel finishes in under a millisecond. The RTX 4050
      sits idle for more than 99% of wall clock. If the goal is a
      CUDA showcase, this is the first thing to fix.
 

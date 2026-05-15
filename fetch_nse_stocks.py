@@ -84,7 +84,10 @@ def fetch_spot_and_vol(ticker: str, window: int = VOL_WINDOW_DAYS) -> tuple[floa
     """Return (spot, annualized log-vol) for an NSE ticker via yfinance."""
     yf_symbol = f"{ticker}.NS"
     t = yf.Ticker(yf_symbol)
-    hist = t.history(period=f"{window + 15}d")
+    try:
+        hist = t.history(period=f"{window + 15}d")
+    except Exception as e:
+        raise RuntimeError(f"yfinance network error for {yf_symbol}: {e}")
     if hist.empty:
         raise RuntimeError(f"yfinance returned no data for {yf_symbol}")
     closes = hist["Close"].dropna()

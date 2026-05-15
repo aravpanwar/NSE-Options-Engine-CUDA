@@ -93,7 +93,7 @@ def fetch_options_chain(symbol="NIFTY", num_expiries=5):
 
     df = pd.DataFrame(rows)
     df = df[df["last_price"] > 0].reset_index(drop=True)
-    df.to_csv("C:/Projects/nse_options_engine/options_data.csv", index=False)
+    df.to_csv("data/options_data.csv", index=False)
     print(f"\nTotal contracts saved: {len(df)}")
     print(df.head(10).to_string())
     return df, spot

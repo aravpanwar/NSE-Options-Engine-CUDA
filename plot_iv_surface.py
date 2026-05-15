@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 
-df = pd.read_csv("C:/Projects/nse_options_engine/options_data.csv")
+df = pd.read_csv("data/options_data.csv")
 spot = df["spot"].iloc[0]
 
 # Use calls only for IV surface (standard practice)
@@ -69,7 +69,7 @@ fig.add_trace(go.Scatter3d(
     name=f"ATM ({atm_strike:,.0f})"
 ))
 
-output_path = "C:/Projects/nse_options_engine/iv_surface.html"
+output_path = "plots/iv_surface.html"
 fig.write_html(output_path, include_plotlyjs='cdn')
 print(f"IV Surface saved to {output_path}")
 print(f"Opening in browser...")

@@ -320,8 +320,10 @@ static void free_buffers(Buffers& b) {
 static std::vector<std::string> split_csv(const std::string& line) {
     std::vector<std::string> out;
     std::string cur;
+    bool in_quotes = false;
     for (char c : line) {
-        if (c == ',') { out.push_back(cur); cur.clear(); }
+        if (c == '"') { in_quotes = !in_quotes; continue; }
+        if (!in_quotes && c == ',') { out.push_back(cur); cur.clear(); }
         else if (c != '\r') { cur.push_back(c); }
     }
     out.push_back(cur);
