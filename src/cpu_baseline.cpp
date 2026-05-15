@@ -1,12 +1,12 @@
 #include <stdio.h>
-#include <math.h>
+#include <cmath>
 #include <chrono>
 
 struct OptionContract { float S, K, T, r, sigma; int type; };
 struct Greeks { float price, delta, gamma, theta, vega; };
 
 float normcdf_cpu(float x) {
-    return 0.5f * erfcf(-x * 0.7071067811865476f);
+    return 0.5f * std::erfc(-x * 0.7071067811865476f);
 }
 float normpdf_cpu(float x) {
     return expf(-0.5f * x * x) * 0.3989422803f;
@@ -23,7 +23,7 @@ void bsm_cpu(const OptionContract& opt, Greeks& g) {
     if (opt.type == 0) { g.price = opt.S * Nd1 - opt.K * disc * Nd2; g.delta = Nd1; }
     else               { g.price = opt.K * disc * Nd2_ - opt.S * Nd1_; g.delta = Nd1 - 1.0f; }
     g.gamma = nd1 / (opt.S * opt.sigma * sqrtT);
-    g.theta = (-(opt.S * nd1 * opt.sigma) / (2.0f * sqrtT) - opt.r * opt.K * disc * (opt.type == 0 ? Nd2 : Nd2_)) / 365.0f;
+    g.theta = (-(opt.S * nd1 * opt.sigma) / (2.0f * sqrtT) + (opt.type == 0 ? -opt.r * opt.K * disc * Nd2 : opt.r * opt.K * disc * Nd2_)) / 365.0f;
     g.vega  = opt.S * nd1 * sqrtT * 0.01f;
 }
 

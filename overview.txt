@@ -227,7 +227,7 @@ src/lsm_engine.cu    (Phase 1, extended in Phase 2, OOS added)
   - CLI: --S0 --K --r --sigma --T --steps --paths --seed --type.
     No args runs the Longstaff-Schwartz 2001 Table 1 validation case
     (American put, S=K=40, r=6%, sigma=20%, T=1, 50 steps); reference
-    price is ~4.478.
+    price is ~2.313.
 
 src/lsm_cpu.cpp      (Phase 1)
   Straight-line port of lsm_engine.cu to sequential C++. Same CLI and

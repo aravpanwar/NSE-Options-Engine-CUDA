@@ -29,7 +29,7 @@ __global__ void bsm_kernel(const OptionContract* contracts, Greeks* results, int
     if (opt.type == 0) { g.price = opt.S * Nd1 - opt.K * disc * Nd2; g.delta = Nd1; }
     else               { g.price = opt.K * disc * Nd2_ - opt.S * Nd1_; g.delta = Nd1 - 1.0f; }
     g.gamma = nd1 / (opt.S * opt.sigma * sqrtT);
-    g.theta = (-(opt.S * nd1 * opt.sigma) / (2.0f * sqrtT) - opt.r * opt.K * disc * (opt.type == 0 ? Nd2 : Nd2_)) / 365.0f;
+    g.theta = (-(opt.S * nd1 * opt.sigma) / (2.0f * sqrtT) + (opt.type == 0 ? -opt.r * opt.K * disc * Nd2 : opt.r * opt.K * disc * Nd2_)) / 365.0f;
     g.vega  = opt.S * nd1 * sqrtT * 0.01f;
     results[idx] = g;
 }
